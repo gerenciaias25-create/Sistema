@@ -1,4 +1,3 @@
-# main.py
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,11 +6,10 @@ import json
 import re
 import asyncio
 import httpx
-from typing import List, Optional
+from typing import Optional
 
 app = FastAPI(title="RADAR Politico Engine", version="2.0")
 
-# Permitir CORS para que tu Dashboard HTML consulte este backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,73 +18,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Modelos de Entrada / Salida
 class RequestPayload(BaseModel):
     nombre: str
     fecha: Optional[str] = "julio 2026"
     forceRefresh: Optional[bool] = False
 
-# Módulo de Limpieza de Texto (NLP Prep)
 def limpiar_texto(texto: str) -> str:
     if not texto:
         return ""
-    # Remover URLs complejas y caracteres ruidosos de scraping
     texto = re.sub(r'http\S+', '', texto)
     texto = re.sub(r'\s+', ' ', texto)
     return texto.strip()
 
-# Extractor Multi-Fuente Asíncrono
 async def extraer_datos_apify(nombre: str, fecha_ctx: str):
     apify_token = os.getenv("APIFY_API_TOKEN")
     if not apify_token:
-        return "No hay token de Apify configurado. Generando análisis deducido."
+        return "No hay token de Apify. Generando análisis por contexto."
 
     async with httpx.AsyncClient(timeout=45.0) as client:
-        # Tarea 1: X / Twitter
         task_tweets = client.post(
             f"https://api.apify.com/v2/acts/apidojo~twitter-scraper-lite/run-sync-get-dataset-items?token={apify_token}",
             json={
-                "searchTerms": [f"{nombre}", f"{nombre} oposicion", f"{nombre} columna opinion"],
+                "searchTerms": [f"{nombre}", f"{nombre} oposicion", f"{nombre} gobierno"],
                 "sort": "Latest",
-                "maxItems": 30,
+                "maxItems": 25,
                 "tweetLanguage": "es"
             }
         )
-
-        # Tarea 2: Google Search & Noticias
         task_noticias = client.post(
             f"https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items?token={apify_token}",
             json={
-                "queries": f"{nombre} noticias columna opinion {fecha_ctx}\n{nombre} oposicion denuncias mexico",
+                "queries": f"{nombre} noticias columna opinion {fecha_ctx}\n{nombre} oposicion denuncias edomex mexico",
                 "resultsPerPage": 20,
                 "maxPagesPerQuery": 1,
                 "languageCode": "es",
                 "countryCode": "mx"
             }
         )
-
-        # Tarea 3: Facebook
         task_fb = client.post(
             f"https://api.apify.com/v2/acts/apify~facebook-posts-scraper/run-sync-get-dataset-items?token={apify_token}",
             json={"searchTerm": nombre, "maxPosts": 20}
         )
 
-        # Ejecución en paralelo ultra-rápida
         res_tweets, res_noticias, res_fb = await asyncio.gather(
             task_tweets, task_noticias, task_fb, return_exceptions=True
         )
 
-    # Procesar y Limpiar Tweets
     tweets_clean = []
     if not isinstance(res_tweets, Exception) and res_tweets.status_code == 200:
-        for t in res_tweets.json()[:25]:
+        for t in res_tweets.json()[:20]:
             txt = limpiar_texto(t.get("text") or t.get("fullText") or "")
             if txt:
-                user = t.get("author", {}).get("userName", "anon")
-                likes = t.get("likeCount", 0)
-                tweets_clean.append(f"[@{user} | Likes:{likes}]: {txt}")
+                tweets_clean.append(f"[@{t.get('author',{}).get('userName','anon')}]: {txt}")
 
-    # Procesar y Limpiar Noticias
     noticias_clean = []
     if not isinstance(res_noticias, Exception) and res_noticias.status_code == 200:
         for item in res_noticias.json():
@@ -95,7 +79,6 @@ async def extraer_datos_apify(nombre: str, fecha_ctx: str):
                 desc = limpiar_texto(r.get("description", ""))
                 noticias_clean.append(f"TITULAR: {title}\nRESUMEN: {desc}")
 
-    # Procesar y Limpiar Facebook
     fb_clean = []
     if not isinstance(res_fb, Exception) and res_fb.status_code == 200:
         for f in res_fb.json()[:15]:
@@ -103,12 +86,11 @@ async def extraer_datos_apify(nombre: str, fecha_ctx: str):
             if txt:
                 fb_clean.append(f"[FB Post]: {txt}")
 
-    # Consolidado de Contexto Limpio
     return (
-        f"=== FUENTES EN TIEMPO REAL PARA '{nombre}' ===\n\n"
-        f"--- TWEETS Y REDES (X) [{len(tweets_clean)} items] ---\n" + "\n".join(tweets_clean) + "\n\n"
-        f"--- NOTICIAS Y PRENSA [{len(noticias_clean)} items] ---\n" + "\n---\n".join(noticias_clean) + "\n\n"
-        f"--- FACEBOOK [{len(fb_clean)} items] ---\n" + "\n".join(fb_clean)
+        f"=== CONTEXTO EXTRAÍDO Y LIMPIO PARA '{nombre}' ===\n\n"
+        f"--- TWITTER/X ---\n" + "\n".join(tweets_clean) + "\n\n"
+        f"--- PRENSA Y MEDIOS ---\n" + "\n---\n".join(noticias_clean) + "\n\n"
+        f"--- FACEBOOK ---\n" + "\n".join(fb_clean)
     )
 
 @app.post("/api/analizar")
@@ -116,22 +98,19 @@ async def analizar_actor(payload: RequestPayload):
     nombre = payload.nombre.strip()
     fecha_ctx = payload.fecha or "julio 2026"
 
-    # 1. Pipeline de Extracción y Limpieza en Python
-    contexto_procesado = await extraer_datos_apify(nombre, fecha_ctx)
-
-    # 2. Prompt Analítico Estructurado
+    contexto = await extraer_datos_apify(nombre, fecha_ctx)
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     if not openrouter_key:
-        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY no configurada")
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY requerida")
 
-    prompt = f"""Eres un Director General de Inteligencia Político-Digital. La fecha de consulta es: {fecha_ctx}.
+    prompt = f"""Eres un Director General de Inteligencia Político-Digital. Fecha: {fecha_ctx}.
 
-DATOS EXTRAÍDOS Y LIMPIADOS MEDIANTE PIPELINE DE PYTHON PARA "{nombre}":
-{contexto_procesado}
+DATOS REALES EXTRAÍDOS Y PROCESADOS EN PYTHON PARA "{nombre}":
+{contexto}
 
-MANDATO DE RIGOR Y EXPLICACIÓN:
-Debes entregar un análisis minucioso, profesional y sin omitir explicaciones detalladas en ninguna pestaña. Devuelve UNICAMENTE un JSON válido con la siguiente estructura exacta:
+INSTRUCCIÓN: Devuelve UNICAMENTE un JSON estructurado con explicaciones exhaustivas (2 a 3 párrafos en campos explicativos) para no omitir ningún análisis.
 
+Estructura JSON obligatoria:
 {{
   "nombre": "{nombre}",
   "cargo": "Cargo oficial a {fecha_ctx} · Entidad / Partido",
@@ -140,13 +119,13 @@ Debes entregar un análisis minucioso, profesional y sin omitir explicaciones de
   "kpis": [
     {{"label": "SEGUIDORES TOTALES", "valor": "X.XM", "nota": "Alcance estimado", "tipo": "acc"}},
     {{"label": "APROBACIÓN DIGITAL", "valor": "XX%", "nota": "Proporción favorable", "tipo": "suc"}},
-    {{"label": "PANTALLAS DE CRISIS", "valor": "X", "nota": "Focos de volatilidad", "tipo": "dan"}},
+    {{"label": "PANTALLAS DE CRISIS", "valor": "X", "nota": "Temas de tensión", "tipo": "dan"}},
     {{"label": "MECANISMO NARRATIVO", "valor": "XX/XX", "nota": "Propia vs Impuesta", "tipo": "gld"}},
     {{"label": "SENTIMIENTO POSITIVO", "valor": "XX%", "nota": "Aceptación neta", "tipo": "suc"}},
-    {{"label": "TENDENCIA", "valor": "Alta / Estable", "nota": "Evolución de conversación", "tipo": "acc"}}
+    {{"label": "TENDENCIA", "valor": "Alta / Estable", "nota": "Evolución", "tipo": "acc"}}
   ],
   "vision_general": {{
-    "resumen_ejecutivo": "Escribe un análisis de 3 párrafos explicando la postura estratégica del personaje, ataques principales, respaldos y balance general a {fecha_ctx}.",
+    "resumen_ejecutivo": "Escribe 2 a 3 párrafos extensos analizando a fondo la postura estratégica del personaje, principales ataques y balance general.",
     "sentimiento": [
       {{"label": "Positivo", "pct": 38}},
       {{"label": "Neutro/Informativo", "pct": 30}},
@@ -170,48 +149,48 @@ Debes entregar un análisis minucioso, profesional y sin omitir explicaciones de
     ]
   }},
   "actores_politicos": {{
-    "explicacion_ecosistema": "Análisis exhaustivo sobre el comportamiento mediático, editorialistas, oposición y ecosistema algorítmico.",
+    "explicacion_ecosistema": "Análisis extenso de la relación del político con medios nacionales, locales, oposición y opinión pública.",
     "analisis_actores": [
       {{
         "categoria": "Prensa Nacional & Columnistas",
         "impacto": "Alto",
-        "narrativa_dominante": "Explicación detallada del encuadre en medios de alcance nacional.",
+        "narrativa_dominante": "Explicación detallada del tratamiento mediático.",
         "tendencia_actitud": "Desfavorable (60%) / Neutro (40%)"
       }},
       {{
         "categoria": "Prensa Local & Portales Regionales",
         "impacto": "Medio",
-        "narrativa_dominante": "Explicación detallada de la cobertura en portales regionales.",
+        "narrativa_dominante": "Explicación detallada de la cobertura local.",
         "tendencia_actitud": "Favorable (70%)"
       }},
       {{
         "categoria": "Oposición & Voceros Críticos",
         "impacto": "Crítico",
-        "narrativa_dominante": "Detalle de los voceros opositores y sus principales señalamientos.",
+        "narrativa_dominante": "Análisis de ataques y líneas de la oposición.",
         "tendencia_actitud": "Adverso (90%)"
       }},
       {{
         "categoria": "Ecosistema Ciudadano & Digital",
         "impacto": "Alto",
-        "narrativa_dominante": "Análisis de la respuesta en comentarios de redes masivas.",
+        "narrativa_dominante": "Sentimiento en comentarios de redes masivas.",
         "tendencia_actitud": "Dividido / Polarizado"
       }}
     ],
     "cruces_bivariados": [
       {{
-        "eje_x": "Plataforma (X vs Facebook)",
-        "eje_y": "Tono de Conversación",
-        "hallazgo": "Explicación analítica del cruce bivariado entre canales y sesgo de la audiencia."
+        "eje_x": "Plataforma (X vs FB)",
+        "eje_y": "Inclinación del Tono",
+        "hallazgo": "Explicación analítica del comportamiento diferenciado por red."
       }},
       {{
         "eje_x": "Sentimiento",
         "eje_y": "Ejes Temáticos Clave",
-        "hallazgo": "Análisis explícito sobre qué temas detonan conversación adversa o favorable."
+        "hallazgo": "Explicación sobre qué temas generan apoyo o rechazo."
       }}
     ]
   }},
   "segmentacion_demografica": {{
-    "analisis_demografico": "Análisis detallado de perfiles sociodemográficos, diferencias por género y rangos de edad.",
+    "analisis_demografico": "Análisis extenso del perfil sociodemográfico por género y grupos de edad.",
     "por_genero": [
       {{"segmento": "Hombres", "positivo": 35, "neutro": 30, "negativo": 35}},
       {{"segmento": "Mujeres", "positivo": 30, "neutro": 28, "negativo": 42}}
@@ -224,24 +203,24 @@ Debes entregar un análisis minucioso, profesional y sin omitir explicaciones de
     ]
   }},
   "mapa_narrativas": {{
-    "explicacion_narrativas": "Análisis de la batalla narrativa entre el relato oficial y las líneas de ataque.",
+    "explicacion_narrativas": "Análisis detallado sobre el combate narrativo entre discurso propio y acusaciones.",
     "favorables": [
-      {{"titulo": "Narrativa A favor 1", "descripcion": "Explicación extensa del alcance y argumentos positivos."}},
-      {{"titulo": "Narrativa A favor 2", "descripcion": "Explicación extensa del alcance y argumentos positivos."}},
-      {{"titulo": "Narrativa A favor 3", "descripcion": "Explicación extensa del alcance y argumentos positivos."}}
+      {{"titulo": "Narrativa A favor 1", "descripcion": "Texto extenso explicando el impacto y fuente."}},
+      {{"titulo": "Narrativa A favor 2", "descripcion": "Texto extenso explicando el impacto y fuente."}},
+      {{"titulo": "Narrativa A favor 3", "descripcion": "Texto extenso explicando el impacto y fuente."}}
     ],
     "criticas": [
-      {{"titulo": "Narrativa En contra 1", "descripcion": "Explicación extensa del impacto y origen de la línea crítica."}},
-      {{"titulo": "Narrativa En contra 2", "descripcion": "Explicación extensa del impacto y origen de la línea crítica."}},
-      {{"titulo": "Narrativa En contra 3", "descripcion": "Explicación extensa del impacto y origen de la línea crítica."}}
+      {{"titulo": "Narrativa En contra 1", "descripcion": "Texto extenso del señalamiento crítico."}},
+      {{"titulo": "Narrativa En contra 2", "descripcion": "Texto extenso del señalamiento crítico."}},
+      {{"titulo": "Narrativa En contra 3", "descripcion": "Texto extenso del señalamiento crítico."}}
     ],
     "neutras": [
-      {{"titulo": "Narrativa Neutra 1", "descripcion": "Detalle de temas informativos en disputa."}},
-      {{"titulo": "Narrativa Neutra 2", "descripcion": "Detalle de temas informativos en disputa."}}
+      {{"titulo": "Narrativa Neutra 1", "descripcion": "Análisis de temas informativos."}},
+      {{"titulo": "Narrativa Neutra 2", "descripcion": "Análisis de temas informativos."}}
     ]
   }},
   "cronologia_eventos": {{
-    "analisis_coyuntural": "Lectura analítica sobre cómo los eventos recientes afectaron la reputación.",
+    "analisis_coyuntural": "Explicación extensa sobre cómo la coyuntura reciente impactó la reputación.",
     "eventos": [
       {{"fecha": "Fecha/Periodo", "badge": "EVENTO DESTACADO", "evento": "Hito 1", "lectura": "Explicación estratégica profunda."}},
       {{"fecha": "Fecha/Periodo", "badge": "PANTALLA DE CRISIS", "evento": "Hito 2", "lectura": "Explicación estratégica profunda."}},
@@ -250,27 +229,23 @@ Debes entregar un análisis minucioso, profesional y sin omitir explicaciones de
     ]
   }},
   "riesgos_oportunidades": {{
-    "dictamen_estrategico": "Evaluación estratégica final para la toma de decisiones ejecutivas.",
+    "dictamen_estrategico": "Dictamen analítico ejecutivo para la toma de decisiones.",
     "riesgos": [
-      {{"nivel": "CRÍTICO", "titulo": "Riesgo 1", "descripcion": "Análisis extenso del riesgo y probabilidad de escalamiento."}},
-      {{"nivel": "ALTO", "titulo": "Riesgo 2", "descripcion": "Análisis extenso del riesgo y probabilidad de escalamiento."}},
-      {{"nivel": "MEDIO", "titulo": "Riesgo 3", "descripcion": "Análisis extenso del riesgo y probabilidad de escalamiento."}}
+      {{"nivel": "CRÍTICO", "titulo": "Riesgo 1", "descripcion": "Explicación extensa del riesgo."}},
+      {{"nivel": "ALTO", "titulo": "Riesgo 2", "descripcion": "Explicación extensa del riesgo."}},
+      {{"nivel": "MEDIO", "titulo": "Riesgo 3", "descripcion": "Explicación extensa del riesgo."}}
     ],
     "oportunidades": [
-      {{"nivel": "ALTO", "titulo": "Oportunidad 1", "descripcion": "Análisis de la veta aprovechable y potencial de agenda."}},
-      {{"nivel": "MEDIO", "titulo": "Oportunidad 2", "descripcion": "Análisis de la veta aprovechable y potencial de agenda."}}
+      {{"nivel": "ALTO", "titulo": "Oportunidad 1", "descripcion": "Análisis de la ventaja estratégica."}},
+      {{"nivel": "MEDIO", "titulo": "Oportunidad 2", "descripcion": "Análisis de la ventaja estratégica."}}
     ]
   }}
 }}"""
 
-    # 3. Consulta a GPT-4o vía OpenRouter
     async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
+        res = await client.post(
             "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openrouter_key}",
-                "Content-Type": "application/json"
-            },
+            headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
             json={
                 "model": "openai/gpt-4o",
                 "max_tokens": 7500,
@@ -278,25 +253,18 @@ Debes entregar un análisis minucioso, profesional y sin omitir explicaciones de
             }
         )
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Error OpenRouter: {response.text}")
+    if res.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Error OpenRouter: {res.text}")
 
-    res_data = response.json()
-    raw_text = res_data["choices"][0]["message"]["content"]
-
-    # Limpieza estricta de JSON
+    raw_text = res.json()["choices"][0]["message"]["content"]
     cleaned = re.sub(r'```json\s*', '', raw_text)
     cleaned = re.sub(r'```\s*$', '', cleaned).strip()
-    
+
     match = re.search(r'\{[\s\S]*\}', cleaned)
     if not match:
-        raise HTTPException(status_code=500, detail="La IA no devolvió un JSON estructural válido")
+        raise HTTPException(status_code=500, detail="Respuesta no válida")
 
-    try:
-        data_json = json.loads(match.group(0))
-        return data_json
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error parseando JSON: {str(e)}")
+    return json.loads(match.group(0))
 
 if __name__ == "__main__":
     import uvicorn
