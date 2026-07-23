@@ -93,6 +93,7 @@
 
     <nav class="tabs-nav">
       <button class="tab-btn active" onclick="showTab('vision', this)">VISIÓN GENERAL</button>
+      <button class="tab-btn" onclick="showTab('fuentes', this)">EXTRACCIÓN DE FUENTES</button>
       <button class="tab-btn" onclick="showTab('actores', this)">ANÁLISIS DE ACTORES</button>
       <button class="tab-btn" onclick="showTab('segmentacion', this)">SEGMENTACIÓN DEMOGRÁFICA</button>
       <button class="tab-btn" onclick="showTab('narrativas', this)">MAPA DE NARRATIVAS</button>
@@ -119,7 +120,7 @@
         </div>
       </div>
 
-      <div class="sec-title" style="margin-top:20px;">Ecosistema de Plataformas & Canales</div>
+      <div class="sec-title" style="margin-top:20px;">Ecosistema de Plataformas &amp; Canales</div>
       <div class="two-col">
         <div class="chart-card">
           <div class="chart-title">Distribución por Canal</div>
@@ -130,6 +131,27 @@
           <div class="chart-title">Tono por Canal</div>
           <div class="chart-sub">Favorable vs Adverso por plataforma</div>
           <div class="chart-container"><canvas id="chartTonoPlataforma"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: EXTRACCIÓN DE FUENTES (NUEVO NODO INTERACTIVO) -->
+    <div class="tab-panel" id="tab-fuentes">
+      <div class="sec-title">Monitoreo Directo Extraído en Tiempo Real</div>
+      <div class="sec-intro">Visualización directa de las publicaciones recopiladas para este actor político por categoría.</div>
+      
+      <div class="nar-grid">
+        <div class="nar-col">
+          <div class="nar-head neu">TWITTER / X</div>
+          <div id="rawTweets"></div>
+        </div>
+        <div class="nar-col">
+          <div class="nar-head neu">PRENSA Y NOTICIAS</div>
+          <div id="rawNoticias"></div>
+        </div>
+        <div class="nar-col">
+          <div class="nar-head neu">FACEBOOK</div>
+          <div id="rawFB"></div>
         </div>
       </div>
     </div>
@@ -279,8 +301,7 @@ async function analizar(forceRefresh = false) {
   document.getElementById('btnAnalizar').disabled = true;
   startLoad();
 
-  // ⚠️ REEMPLAZA ESTA URL CON TU DOMINIO REAL DE RENDER (Sin barra '/' al final)
-  const RENDER_URL = 'https://radar-python-engine.onrender.com';
+  const RENDER_URL = 'https://sistema-ic6ar25fx-gerencia-s-projects.vercel.app'; 
 
   try {
     const res = await fetch(`${RENDER_URL}/api/analizar`, {
@@ -292,7 +313,7 @@ async function analizar(forceRefresh = false) {
     const data = await res.json();
     stopLoad();
 
-    if (!res.ok || data.detail || data.error) {
+    if (!res.ok || data.error) {
       document.getElementById('loadingWrap').classList.remove('show');
       document.getElementById('errorWrap').classList.add('show');
       document.getElementById('errorText').textContent = data.detail || data.error || 'Error procesando consulta';
@@ -332,8 +353,27 @@ function renderDashboard(d) {
     </div>
   `).join('');
 
+  // TEXTOS EXPLICATIVOS POR PESTAÑA
   const vg = d.vision_general || {};
   document.getElementById('txtVisionResumen').textContent = vg.resumen_ejecutivo || d.resumen_ejecutivo || 'Sin análisis registrado.';
+
+  // FUENTES DIRECTAS SCRAPEADAS
+  const ext = d.extraccion_directa || {};
+  
+  const twList = ext.tweets || [];
+  document.getElementById('rawTweets').innerHTML = twList.length > 0 
+    ? twList.map(t => `<div class="nar-item"><div class="nar-item-t">${t.autor}</div><div class="nar-item-d">${t.texto}</div></div>`).join('')
+    : '<div class="nar-item"><div class="nar-item-d">Sin datos recientes registrados.</div></div>';
+
+  const notList = ext.noticias || [];
+  document.getElementById('rawNoticias').innerHTML = notList.length > 0
+    ? notList.map(n => `<div class="nar-item"><div class="nar-item-t">${n.titulo}</div><div class="nar-item-d">${n.resumen}</div></div>`).join('')
+    : '<div class="nar-item"><div class="nar-item-d">Sin noticias recientes registradas.</div></div>';
+
+  const fbList = ext.fb || [];
+  document.getElementById('rawFB').innerHTML = fbList.length > 0
+    ? fbList.map(f => `<div class="nar-item"><div class="nar-item-d">${f.texto}</div></div>`).join('')
+    : '<div class="nar-item"><div class="nar-item-d">Sin publicaciones recientes en Facebook.</div></div>';
 
   const act = d.actores_politicos || {};
   document.getElementById('txtActoresExplicacion').textContent = act.explicacion_ecosistema || 'Sin análisis de actores.';
