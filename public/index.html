@@ -279,7 +279,10 @@ async function analizar(forceRefresh = false) {
   document.getElementById('btnAnalizar').disabled = true;
   startLoad();
 
- const res = await fetch('/api/analizar', {
+ // Reemplaza con la URL de tu backend en Render
+const RENDER_URL = 'https://radar-python-engine.onrender.com'; 
+
+const res = await fetch(`${RENDER_URL}/api/analizar`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ nombre, fecha, forceRefresh })
