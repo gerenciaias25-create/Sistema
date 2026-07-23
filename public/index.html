@@ -280,14 +280,16 @@ async function analizar(forceRefresh = false) {
   startLoad();
 
   try {
-    const res = await fetch('/api/analizar', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nombre, fecha, forceRefresh })
-    });
+    const res = await fetch('/api/analizar', { ... });
 
-    const data = await res.json();
-    stopLoad();
+// POR ESTO (Pon tu URL de Render aquí):
+const RENDER_URL = "https://tu-app-en-render.onrender.com"; // <-- Pon tu link de Render
+
+const res = await fetch(`${RENDER_URL}/api/analizar`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ nombre, fecha, forceRefresh })
+});
 
     if (!res.ok || data.error) {
       document.getElementById('loadingWrap').classList.remove('show');
